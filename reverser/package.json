@@ -1,0 +1,5 @@
+{
+  "name": "reverser",
+  "main": "index.js",
+  "files": ["index.js"]
+}

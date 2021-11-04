@@ -70,13 +70,43 @@
   }
 
   async function runJS(command, args) {
-    const fileName = command + ".js";
     let fileHandle;
-    try {
-       fileHandle = await dirHandle.getFileHandle(fileName);
-    } catch {
-      konsole.value += `Command '${command}' not found.\n`;
-      return;
+
+    if (command == "run") {
+      let [ project, ...argv ] = args;
+      args = argv;
+      command = project;
+      try {
+        const modulesHandle = await dirHandle.getDirectoryHandle("modules", { create: true });
+        const projectHandle = await modulesHandle.getDirectoryHandle(project, { create: false });
+
+        for await (const entry of projectHandle.values()) {
+          let output = entry.name;
+          if (entry.kind == 'directory') {
+            output += '/';
+          }
+        }
+
+        const packageJsonHandle = await projectHandle.getFileHandle("package.json");
+
+        const file = await packageJsonHandle.getFile();
+        const content = await file.text();
+        const json = JSON.parse(content);
+        
+        let fileName = json.main;
+        fileHandle = await projectHandle.getFileHandle(fileName);
+      } catch {
+        konsole.value += `Command '${command}' not found.\n`;
+        return;
+      }
+    } else {
+      let fileName = command + ".js";
+      try {
+        fileHandle = await dirHandle.getFileHandle(fileName);
+      } catch {
+        konsole.value += `Command '${command}' not found.\n`;
+        return;
+      }
     }
 
     const file = await fileHandle.getFile();
