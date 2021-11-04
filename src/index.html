@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<script type="module">
+  function open() {
+    return new Promise((resolve, reject) => {
+      const request = self.indexedDB.open("kv-storage:default", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+      request.onupgradeneeded = () => request.result.createObjectStore("store");
+    })
+  }
+
+  async function set(key, value) {
+    const database = await open();
+    const transaction = database.transaction("store", 'readwrite');
+    const store = transaction.objectStore("store");
+    store.put(value, key);
+    await new Promise((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+      transaction.onerror = () => reject(transaction.error);
+    });
+    database.close();
+  }
+
+  async function get(key) {
+    const database = await open();
+    const transaction = database.transaction("store", 'readonly');
+    const store = transaction.objectStore("store");
+    const request = store.get(key);
+    const entry = await new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+    return entry;
+  }
+
+  let input = document.querySelector("input");
+  let konsole = document.querySelector("textarea");
+  let btn = document.querySelector("#select-dir-btn");
+  let btn2 = document.querySelector("#reuse-dir-btn");
+  let argsJS = document.querySelector("#args-js");
+  let loadedJS = document.querySelector("#loaded-js");
+  let dirHandle = await get("directory");
+  if (dirHandle) {
+    btn2.disabled = false;
+  }
+
+  btn2.onclick = async () => {
+    if (dirHandle) {
+      await dirHandle.requestPermission({ mode : "readwrite" });
+      konsole.value += `'${dirHandle.name}' directory is mounted.\n`;
+    }
+  }
+
+  window.addEventListener('message', function(response) {
+    if (response.data) {
+      const message = response.data.message;
+      konsole.value += message.join(" ") + '\n';
+      konsole.scrollTop = konsole.scrollHeight;
+    }
+  });
+
+  btn.onclick = async function selectDir() {
+    const dirHandle = await window.showDirectoryPicker();
+    if (dirHandle) {
+      konsole.value += `'${dirHandle.name}' directory is mounted.\n`;
+      set("directory", dirHandle)
+    }
+  }
+
+  async function runJS(command, args) {
+    const fileName = command + ".js";
+    let fileHandle;
+    try {
+       fileHandle = await dirHandle.getFileHandle(fileName);
+    } catch {
+      konsole.value += `Command '${command}' not found.\n`;
+      return;
+    }
+
+    const file = await fileHandle.getFile();
+    const content = await file.text();
+
+    const url = URL.createObjectURL(new Blob([`
+      <script type=module>
+        const { log } = console;
+        console.log = (...args) => {
+          window.parent.postMessage({ message: args, type: 'log' }, '*');
+          log.apply(console, args);
+        };
+        ${content}
+        globalThis.onmessage = async event => {
+          main(event.data.argv, event.data.pwd);
+        }
+      <\/script>`], { type: 'text/html' })
+    );
+
+    argsJS.innerText = `argv: ${JSON.stringify(args)}`;
+    loadedJS.innerText = content;
+
+    const iframe = document.createElement("iframe");
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+    iframe.src = url;
+
+    let ready = new Promise(resolve => {
+      iframe.addEventListener('load', resolve, { once: true });
+    });
+
+    await ready;
+    dirHandle.requestPermission({ mode : "readwrite" });
+    iframe.contentWindow.postMessage({
+      pwd: dirHandle,
+      argv: args,
+    }, {transferUserActivation: true});
+
+    setTimeout(() => iframe.parentNode.removeChild(iframe), 1000);
+  }
+
+  function handleCmd(cmd) {
+    // Split on space expect when within quotes.
+    let [command, ...args] = cmd.split(/"([^"]+)"|\s+/).filter(v => v?.length);
+    runJS(command, args);
+  }
+
+  input.addEventListener('change', e => {
+    let value = e.currentTarget.value;
+    konsole.value += "$ " + value + '\n';
+
+    handleCmd(value);
+    
+    e.currentTarget.value = '';
+ });
+</script>
+
+<style>
+  body {
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+  }
+
+  h1 {
+    font-family: "Arial";
+  }
+
+  textarea {
+    height: 300px;
+  }
+
+  * > * {
+    margin: 6px;
+  }
+</style>
+
+<body>
+  <h1>File System Private Console</h1>
+  <button id="select-dir-btn">Mount new directory</button>
+  <button id="reuse-dir-btn" disabled>Mount last directory</button>
+
+  <textarea id="konsole"></textarea>
+  <input type=text></input>
+
+  <pre id="args-js">argv:</pre>
+  <hr>
+  <pre id="loaded-js"></pre>
+</body> 
