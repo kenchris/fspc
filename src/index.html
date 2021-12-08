@@ -1,5 +1,68 @@
 <!DOCTYPE html>
 <script type="module">
+  function rejectAfterTimeout(ms, message) {
+    let timeoutId = -1;
+    const promise = new Promise((_, reject) => {
+      timeoutId = self.setTimeout(() => reject(message), ms);
+    });
+    const abort = (() => self.clearTimeout(timeoutId));
+
+    return { promise, abort };
+  }
+
+  async function serviceWorkerReady() {
+    if (navigator.serviceWorker && !navigator.serviceWorker.controller)
+    {
+      // Create a promise that resolves when the "controllerchange" event fires.
+      const controllerChangePromise = new Promise(resolve =>
+        navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true }));
+
+      // Race with a 4-second timeout.
+      const timeout = rejectAfterTimeout(4000, "SW ready timeout");
+
+      await Promise.race([
+        controllerChangePromise,
+        timeout.promise
+      ]);
+
+      timeout.abort();
+    }
+  }
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js', {scope: '/'})
+    .then((reg) => {
+      console.log('Registration succeeded. Scope is ' + reg.scope);
+    }).catch((error) => {
+      console.log('Registration failed with ' + error);
+    });
+  }
+
+  await serviceWorkerReady();
+
+  navigator.serviceWorker.addEventListener("message", e =>
+  {
+    switch (e.data.type) {
+    case "fetch":
+      HandleFetch(e);
+      break;
+    default:
+      console.warn(`Unknown message from SW '${e.data.type}'`);
+      break;
+    }
+  });
+
+  async function HandleFetch(e) {
+    let fileName = new URL(e.data.url).pathname.substring(1);
+    const fileHandle = await dirHandle.getFileHandle(fileName);
+    const file = await fileHandle.getFile();
+
+    e.data.port.postMessage({
+      type: "ok",
+      file
+    });
+  }
+
   function open() {
     return new Promise((resolve, reject) => {
       const request = self.indexedDB.open("kv-storage:default", 1);
@@ -71,6 +134,7 @@
 
   async function runJS(command, args) {
     let fileHandle;
+    let fileName;
 
     if (command == "run") {
       let [ project, ...argv ] = args;
@@ -92,15 +156,15 @@
         const file = await packageJsonHandle.getFile();
         const content = await file.text();
         const json = JSON.parse(content);
-        
-        let fileName = json.main;
+
+        fileName = json.main;
         fileHandle = await projectHandle.getFileHandle(fileName);
       } catch {
         konsole.value += `Command '${command}' not found.\n`;
         return;
       }
     } else {
-      let fileName = command + ".js";
+      fileName = command + ".js";
       try {
         fileHandle = await dirHandle.getFileHandle(fileName);
       } catch {
@@ -112,27 +176,13 @@
     const file = await fileHandle.getFile();
     const content = await file.text();
 
-    const url = URL.createObjectURL(new Blob([`
-      <script type=module>
-        const { log } = console;
-        console.log = (...args) => {
-          window.parent.postMessage({ message: args, type: 'log' }, '*');
-          log.apply(console, args);
-        };
-        ${content}
-        globalThis.onmessage = async event => {
-          main(event.data.argv, event.data.pwd);
-        }
-      <\/script>`], { type: 'text/html' })
-    );
-
     argsJS.innerText = `argv: ${JSON.stringify(args)}`;
     loadedJS.innerText = content;
 
     const iframe = document.createElement("iframe");
     iframe.style.display = 'none';
     document.body.appendChild(iframe);
-    iframe.src = url;
+    iframe.src = `loader.html#${fileName}`;
 
     let ready = new Promise(resolve => {
       iframe.addEventListener('load', resolve, { once: true });
@@ -159,7 +209,7 @@
     konsole.value += "$ " + value + '\n';
 
     handleCmd(value);
-    
+
     e.currentTarget.value = '';
  });
 </script>
@@ -195,4 +245,4 @@
   <pre id="args-js">argv:</pre>
   <hr>
   <pre id="loaded-js"></pre>
-</body> 
+</body>
